@@ -1,5 +1,8 @@
 # OrderDesk — Prompt Engineering & Tool Calling Lab
 
+**Sinh viên:** Nguyễn Viết Du  
+**MSSV:** 2A202600800  
+**Môn học:** Generative AI — Day 4 Lab
 
 ---
 
