@@ -245,6 +245,29 @@ def summarize_scores(scores: list[CaseScore]) -> dict[str, Any]:
     }
 
 
+RESET  = "\033[0m"
+BOLD   = "\033[1m"
+GREEN  = "\033[32m"
+YELLOW = "\033[33m"
+RED    = "\033[31m"
+CYAN   = "\033[36m"
+DIM    = "\033[2m"
+
+
+def _color_score(score: float, max_score: float) -> str:
+    pct = score / max_score if max_score else 0
+    bar_len = 20
+    filled = round(pct * bar_len)
+    bar = "█" * filled + "░" * (bar_len - filled)
+    if pct >= 0.9:
+        color = GREEN
+    elif pct >= 0.65:
+        color = YELLOW
+    else:
+        color = RED
+    return f"{color}{bar}{RESET} {color}{score:.0f}/{max_score:.0f}{RESET}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Grade saved JSON output for the order-agent lab")
     parser.add_argument("--module", default="solution.agent.graph")
@@ -266,8 +289,22 @@ def main() -> int:
     if effective_judge_provider is None and any(case["weights"].get("llm_judge", 0) > 0 for case in cases):
         effective_judge_provider = args.provider
 
+    total = len(cases)
+    print(f"\n{BOLD}{'═' * 60}{RESET}")
+    print(f"{BOLD}  OrderDesk Grader — {args.module}{RESET}")
+    print(f"{DIM}  provider: {args.provider}  |  cases: {total}  |  date: {args.today}{RESET}")
+    print(f"{BOLD}{'═' * 60}{RESET}\n")
+
     scores: list[CaseScore] = []
-    for case in cases:
+    for idx, case in enumerate(cases, 1):
+        case_id = case["id"]
+        category = case.get("category", "")
+        category_badge = {"normal": f"{GREEN}●{RESET}", "edge": f"{YELLOW}◆{RESET}", "clarification": f"{CYAN}◎{RESET}", "guardrail": f"{RED}✕{RESET}"}.get(category, "·")
+
+        print(f"  {DIM}[{idx:02d}/{total}]{RESET} {category_badge} {BOLD}{case_id}{RESET}")
+        print(f"        {DIM}Query: {case['query'][:80]}{'…' if len(case['query']) > 80 else ''}{RESET}")
+        print(f"        {DIM}Đang chạy agent...{RESET}", end="", flush=True)
+
         raw_result = module.run_agent(
             case["query"],
             provider=args.provider,
@@ -275,18 +312,50 @@ def main() -> int:
             today=args.today,
         )
         result = coerce_result(raw_result, query=case["query"], provider=args.provider, model_name=args.model_name)
-        scores.append(
-            grade_result(
-                result,
-                case,
-                judge_provider=effective_judge_provider,
-                judge_model_name=args.judge_model_name,
-            )
+
+        tools_used = [t["name"] if isinstance(t, dict) else t.name for t in result.get("tool_calls", [])]
+        print(f"\r        {DIM}Tools: {' → '.join(tools_used) if tools_used else '(none)'}{RESET}    ")
+
+        case_score = grade_result(
+            result,
+            case,
+            judge_provider=effective_judge_provider,
+            judge_model_name=args.judge_model_name,
         )
+        scores.append(case_score)
+
+        print(f"        {_color_score(case_score.score, case_score.max_score)}")
+        if case_score.feedback:
+            for fb in case_score.feedback[:3]:
+                icon = "✓" if any(w in fb.lower() for w in ["correct", "successfully", "good", "reward", "confirmed", "grounded", "clearly"]) else "✗"
+                color = GREEN if icon == "✓" else RED
+                print(f"        {color}{icon}{RESET} {DIM}{fb}{RESET}")
+            if len(case_score.feedback) > 3:
+                print(f"        {DIM}  … +{len(case_score.feedback) - 3} feedback khác{RESET}")
+        print()
 
     summary = summarize_scores(scores)
+    overall = summary["overall_score"]
+
+    print(f"{BOLD}{'═' * 60}{RESET}")
+    print(f"{BOLD}  KẾT QUẢ TỔNG HỢP{RESET}")
+    print(f"{'─' * 60}")
+
+    for item in summary["cases"]:
+        pct = item["score"] / item["max_score"] if item["max_score"] else 0
+        color = GREEN if pct >= 0.9 else YELLOW if pct >= 0.65 else RED
+        print(f"  {color}{'PASS' if pct >= 0.65 else 'FAIL'}{RESET}  {item['case_id']:<45} {color}{item['score']:>5.1f}/{item['max_score']:.0f}{RESET}")
+
+    print(f"{'─' * 60}")
+    overall_color = GREEN if overall >= args.pass_threshold else YELLOW if overall >= 65 else RED
+    print(f"\n  {BOLD}Điểm tổng:{RESET} {overall_color}{BOLD}{overall:.2f} / 100{RESET}")
+    print(f"  Earned: {summary['total_earned']:.1f} / {summary['total_max']:.1f}")
+    status = f"{GREEN}PASS{RESET}" if overall >= args.pass_threshold else f"{RED}FAIL{RESET}"
+    print(f"  Ngưỡng {args.pass_threshold:.0f}:  {status}")
+    print(f"\n{BOLD}{'═' * 60}{RESET}\n")
+
     print(json.dumps(summary, indent=2, ensure_ascii=False))
-    return 0 if summary["overall_score"] >= args.pass_threshold else 1
+    return 0 if overall >= args.pass_threshold else 1
 
 
 if __name__ == "__main__":
